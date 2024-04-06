@@ -13,7 +13,7 @@ func main() {
 	// Middleware
 	// State
 	users := make([]User, 0)
-	withUsers := WithUsers(users)
+	withUsers := WithUsers(&users)
 	n := negroni.New()
 	n.Use(negroni.HandlerFunc(LogMiddleware))
 	n.Use(negroni.HandlerFunc(withUsers))
@@ -22,7 +22,11 @@ func main() {
 	r.Get("/", func(rw http.ResponseWriter, r *http.Request) {
 		io.WriteString(rw, "Hello, world!")
 	})
+	r.Get("/user", HandleGetUser)
 	r.Post("/user/new", HandleCreateUser)
+	r.Post("/post/new", HandleCreatePost)
+	r.Get("/user/posts", HandleGetUserPosts)
+	r.Delete("/user", HandleDeleteUser)
 
 	n.UseHandler(r)
 
