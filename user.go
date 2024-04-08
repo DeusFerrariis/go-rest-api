@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/charmbracelet/log"
+	resp "github.com/nicklaw5/go-respond"
 )
 
 type (
@@ -37,7 +38,33 @@ type (
 		Username string `json:"username"`
 		Content  string `json:"content"`
 	}
+
+	UserIdRequest struct {
+		UserId int `json:"user_id"`
+	}
 )
+
+func FromRequest[V interface{}](r *http.Request) (*V, error) {
+	var body V
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	return &body, nil
+}
+
+type BodyHandler[B interface{}] func(http.ResponseWriter, *http.Request, B)
+
+func HandleWithBody[B interface{}](next BodyHandler[B]) http.HandlerFunc {
+	return func(rw http.ResponseWriter, r *http.Request) {
+		body, err := FromRequest[B](r)
+		if err != nil {
+			resp.NewResponse(rw).BadRequest(nil)
+			log.Error("recieved bad request: %s", err)
+			return
+		}
+		next(rw, r, *body)
+	}
+}
 
 // Middlewares
 
@@ -59,82 +86,64 @@ func WithPosts(posts []Post) func(rw http.ResponseWriter, r *http.Request, next 
 
 // Handlers
 
-func HandleDeleteUser(rw http.ResponseWriter, r *http.Request) {
+func Message(msg string) map[string]string {
+	return map[string]string{"message": msg}
+}
+
+func handleCreateUser(rw http.ResponseWriter, r *http.Request, b CreateUserRequest) {
+	if b.Username == "" {
+		resp.NewResponse(rw).BadRequest(Message("username can't be empty"))
+		return
+	}
+
 	users, ok := r.Context().Value(ContextKey{"users"}).(*[]User)
-
 	if !ok {
-		rw.WriteHeader(http.StatusInternalServerError)
-		log.Error("could not retrieve user from request context")
+		resp.NewResponse(rw).DefaultMessage().InternalServerError(nil)
+		return
 	}
 
-	var id string
-	if id = r.URL.Query().Get("id"); id == "" {
-		rw.WriteHeader(http.StatusBadRequest)
-		io.WriteString(rw, "missing name parameter in URL query")
-		return
+	for _, u := range *users {
+		if u.Name == b.Username {
+			resp.NewResponse(rw).BadRequest(Message("user with that username, already exists"))
+			log.Debug("request for existing user", "username", b.Username)
+			return
+		}
 	}
-	var idInt int
-	if i, err := strconv.Atoi(id); err != nil {
-		rw.WriteHeader(http.StatusBadRequest)
-		io.WriteString(rw, "invalid id"+id)
+
+	id := 1
+	if len(*users) != 0 {
+		id = (*users)[len(*users)-1].Id + 1
+	}
+
+	*users = append(*users, User{Name: b.Username, Id: id})
+
+	resp.NewResponse(rw).Accepted(map[string]int{"user_id": id})
+}
+
+var HandleCreateUser = HandleWithBody[CreateUserRequest](handleCreateUser)
+
+func handleDeleteUser(rw http.ResponseWriter, r *http.Request, b UserIdRequest) {
+	users, ok := r.Context().Value(ContextKey{"users"}).(*[]User)
+	if !ok {
+		resp.NewResponse(rw).DefaultMessage().InternalServerError(nil)
+		log.Error("could not retrieve user from request context")
 		return
-	} else {
-		idInt = i
 	}
 
 	for i, user := range *users {
-		if user.Id == idInt {
+		if user.Id == b.UserId {
 			// All except user at position i
 			*users = append((*users)[:i], (*users)[i+1:]...)
 		}
 	}
 }
 
-func HandleCreateUser(rw http.ResponseWriter, r *http.Request) {
-	users, ok := r.Context().Value(ContextKey{"users"}).(*[]User)
-	log.Debug("users", users)
-	if !ok {
-		rw.WriteHeader(http.StatusInternalServerError)
-		return
-	}
+var HandleDeleteUser = HandleWithBody[UserIdRequest](handleDeleteUser)
 
-	var userReq CreateUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&userReq); err != nil {
-		log.Error("recieved bad request", "err", err)
-		rw.WriteHeader(http.StatusBadRequest)
-		io.WriteString(rw, "invalid payload")
-		return
-	}
-
-	for _, u := range *users {
-		if u.Name == userReq.Username {
-			rw.WriteHeader(http.StatusBadRequest)
-			log.Debug("request for existing user", "username", userReq.Username)
-			io.WriteString(rw, "user already exists")
-			return
-		}
-	}
-
-	var id int
-	if len(*users) == 0 {
-		id = 1
-	} else {
-		id = (*users)[len(*users)-1].Id + 1
-	}
-
-	*users = append(*users, User{Name: userReq.Username, Id: id})
-
-	if err := json.NewEncoder(rw).Encode(map[string]int{"user_id": id}); err != nil {
-		rw.WriteHeader(http.StatusInternalServerError)
-		log.Errorf("Error serializing: %s", err.Error())
-		return
-	}
-	rw.WriteHeader(http.StatusAccepted)
-}
-
+// TODO  convert to use HandleWithBody
 func HandleCreatePost(rw http.ResponseWriter, r *http.Request) {
-	var postReq CreatePostRequest
-	if err := json.NewDecoder(r.Body).Decode(&postReq); err != nil {
+	reqBody, err := FromRequest[CreatePostRequest](r)
+	if err != nil {
 		log.Error("recieved bad request", "err", err)
 		rw.WriteHeader(http.StatusBadRequest)
 		io.WriteString(rw, "invalid payload")
@@ -142,8 +151,8 @@ func HandleCreatePost(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	p := Post{
-		Author:  postReq.Username,
-		Content: postReq.Content,
+		Author:  reqBody.Username,
+		Content: reqBody.Content,
 	}
 
 	posts, ok := r.Context().Value(ContextKey{"posts"}).(*[]Post)
@@ -184,7 +193,7 @@ func HandleGetUser(rw http.ResponseWriter, r *http.Request) {
 		if idInt == user.Id {
 			if err := json.NewEncoder(rw).Encode(dataResponse(user)); err != nil {
 				rw.WriteHeader(http.StatusInternalServerError)
-				log.Errorf("could not serialize user: ", err.Error())
+				log.Errorf("could not serialize user: %s", err.Error())
 			}
 			return
 		}

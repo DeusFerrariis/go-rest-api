@@ -6,6 +6,7 @@ require (
 	github.com/charmbracelet/lipgloss v0.10.0
 	github.com/charmbracelet/log v0.4.0
 	github.com/go-chi/chi/v5 v5.0.12
+	github.com/nicklaw5/go-respond v1.6.0
 	github.com/urfave/negroni v1.0.0
 )
 
